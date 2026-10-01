@@ -31,7 +31,7 @@ jobs:
             echo "version must use MAJOR.MINOR.PATCH" >&2
             exit 1
           fi
-          latest="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name // ""' 2>/dev/null || true)"
+          latest="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=1" --jq '.[0].tag_name // ""')"
           latest="${latest#v}"
           if [[ -n "$latest" ]] && { [[ "$latest" == "$version" ]] || [[ "$(printf '%s\n%s\n' "$latest" "$version" | sort -V | tail -n 1)" != "$version" ]]; }; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
