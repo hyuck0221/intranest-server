@@ -1,0 +1,19 @@
+services:
+  intranest:
+    image: ghcr.io/hyuck0221/intranest-server:latest
+    container_name: intranest-server
+    restart: unless-stopped
+    user: "${INTRANEST_UID:-1000}:${INTRANEST_GID:-1000}"
+    ports:
+      - "${INTRANEST_PORT:-8080}:8080"
+    environment:
+      INTRANEST_LISTEN_ADDR: "0.0.0.0:8080"
+      INTRANEST_DATA_DIR: /data
+      INTRANEST_CORS_ORIGINS: "${INTRANEST_CORS_ORIGINS:-http://localhost:4173,http://127.0.0.1:4173}"
+      INTRANEST_MAX_FILE_BYTES: "${INTRANEST_MAX_FILE_BYTES:-104857600}"
+      INTRANEST_MAX_TOTAL_BYTES: "${INTRANEST_MAX_TOTAL_BYTES:-10737418240}"
+      INTRANEST_TLS_CERT: "${INTRANEST_TLS_CERT:-}"
+      INTRANEST_TLS_KEY: "${INTRANEST_TLS_KEY:-}"
+    volumes:
+      - ./data:/data
+      - ./certs:/certs:ro

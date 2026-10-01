@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Decide whether this version is new
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '\r\n' < version)"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "version must use MAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+          latest="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name // ""' 2>/dev/null || true)"
+          latest="${latest#v}"
+          if [[ -n "$latest" ]] && { [[ "$latest" == "$version" ]] || [[ "$(printf '%s\n%s\n' "$latest" "$version" | sort -V | tail -n 1)" != "$version" ]]; }; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Version $version is not newer than the published version $latest."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Build native release packages
+        if: steps.version.outputs.publish == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          mkdir -p release
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            ext=""
+            if [[ "$os" == "windows" ]]; then ext=".exe"; fi
+            name="intranest-server_${version}_${os}_${arch}"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags="-s -w -X main.version=${version}" -o "release/${name}${ext}" ./cmd/intranest
+            if [[ "$os" == "windows" ]]; then
+              (cd release && zip -q "${name}.zip" "${name}${ext}")
+            else
+              tar -C release -czf "release/${name}.tar.gz" "${name}${ext}"
+            fi
+          done
+      - name: Create GitHub release
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v${{ steps.version.outputs.version }}" release/*.tar.gz release/*.zip --title "IntraNest Server v${{ steps.version.outputs.version }}" --generate-notes
+      - name: Set up Docker Buildx
+        if: steps.version.outputs.publish == 'true'
+        uses: docker/setup-buildx-action@v4
+      - name: Log in to GitHub Container Registry
+        if: steps.version.outputs.publish == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish container
+        if: steps.version.outputs.publish == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/hyuck0221/intranest-server:${{ steps.version.outputs.version }}
+            ghcr.io/hyuck0221/intranest-server:latest

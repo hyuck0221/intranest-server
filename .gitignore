@@ -1,0 +1,9 @@
+/data/
+.env
+/certs/
+*.log
+/intranest
+/intranest.exe
+*.tar.gz
+*.zip
+.DS_Store
