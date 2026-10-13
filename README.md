@@ -1,75 +1,76 @@
+<p align="center"><img src="docs/assets/intranest-mark.png" width="112" alt="IntraNest logo"></p>
+
 # IntraNest Server
 
-Keep your team's shared links, files, and conversations on a computer inside your intranet. IntraNest Server runs on your own machine; it does not upload this content to a public hosting service.
+Keep your team's links, files, and conversations on a computer you control. The server runs inside your intranet and stores shared content on its own data volume.
 
-**Current version:** `0.1.0`  
+**Current version:** `0.2.0`
+
 **Available languages:** [한국어](README.ko.md)
 
-## What it does
+## Install on your server computer
 
-- Keeps shared links, chat history, and uploaded files on the server computer.
-- Lets browser extensions and the IntraNest web admin connect to one intranet address.
-- Removes chat messages after 30 days by default. The host can change this in Admin → Settings.
-- Provides Docker Compose and standalone downloads for Windows, macOS, and Linux.
-- Protects the host disk with a 100 MiB per-file limit and a 10 GiB shared-file limit by default.
+Install Docker Desktop (Windows/macOS) or Docker Engine (Linux), start it, then run:
 
-## Start with Docker Compose
+```sh
+curl -fsSL https://github.com/hyuck0221/intranest-server/releases/latest/download/install.sh | sh
+```
 
-1. Install Docker Desktop (Windows/macOS) or Docker Engine with Compose v2 (Linux).
-2. Download this repository on the computer that will host the server.
-3. Run the setup script:
+This downloads the official container and starts it without cloning or forking the repository. On Windows, run the command in WSL or Git Bash with Docker Desktop running. The server listens on port `43187` across the computer's network interfaces.
 
-   ```sh
-   ./scripts/setup.sh
-   ```
+In Admin or the Chrome extension, enter only the server computer's IP address or host name, such as `192.168.1.40`. The apps use port `43187` automatically. Allow TCP port `43187` through the host firewall for the network that should use IntraNest.
 
-   On Windows, run the same steps in WSL, or start the container with Docker Desktop using the compose file.
-4. If your public IntraNest website is hosted at a different origin, add that exact origin to `INTRANEST_CORS_ORIGINS` in `.env`, then restart the server.
-5. Allow TCP port `8080` through the host computer's firewall for your intranet only.
-6. After the first start, share the access key from `data/access.token` with your team through a trusted channel.
-7. In IntraNest Admin or the extension, enter `http://<server-computer-address>:8080` and the access key.
+Clients try HTTPS first and retry over HTTP if the HTTPS connection fails. Configure a trusted certificate on the server when encrypted connections are required.
 
-The connection check is public so a browser can confirm that the server is present. Links, files, chat, and settings require the access key.
+For a browser page hosted over HTTPS, configure HTTPS on IntraNest too so chat can use a secure WebSocket. Put the certificate and key in a host directory, then point the installer at that directory and their file names inside `/certs`:
 
-## Install without Docker
+```sh
+curl -fsSL https://github.com/hyuck0221/intranest-server/releases/latest/download/install.sh | INTRANEST_CERT_DIR="$PWD/certs" INTRANEST_TLS_CERT=/certs/fullchain.pem INTRANEST_TLS_KEY=/certs/privkey.pem sh
+```
 
-Download the latest package for the host computer from [GitHub Releases](https://github.com/hyuck0221/intranest-server/releases), extract it, and start the executable from that folder. The server creates a `data` folder and a random access key on first launch.
+Use a certificate trusted by client devices and valid for the server address. The installer copies those files into a Docker volume with read-only access for the server.
 
-- macOS/Linux: `./intranest`
-- Windows: `intranest.exe`
+## What the team can share
 
-The server listens on `0.0.0.0:8080` by default. Read the key in `data/access.token` and allow the port through the computer's intranet firewall.
+- Links to everyday team sites.
+- Files stored on the server computer.
+- Live chat and its 30-day default history retention.
 
-## Keep the connection private
+The host can change chat retention from Admin → Settings. Uploads default to 100 MiB per file and 10 GiB total.
 
-The access key is a shared team key, not an individual account. Anyone who has it can read, add, and delete shared content. Keep it private and rotate it by stopping the server, replacing `data/access.token` with a new random value of at least 32 characters, then restarting.
+## Network access
 
-Names shown beside chat messages are entered by each sender and are not verified accounts.
+IntraNest has no sign-in or access key. Anyone who can reach the server can view, add, and delete links, files, and chat messages. The server accepts browser requests from any origin and listens on all network interfaces by default. Keep it on a trusted network, restrict the port with the computer's firewall, and do not expose it to the public internet.
 
-The server supports HTTPS when you provide a trusted certificate and key with `INTRANEST_TLS_CERT` and `INTRANEST_TLS_KEY`. Without HTTPS, API traffic and the access key are not encrypted on the local network. Use a trusted internal certificate when the network is not fully trusted. Set `INTRANEST_CORS_ORIGINS` to the exact origin of your IntraNest web page; do not use `*`.
+Chat display names are entered by each sender and are not verified accounts. Standard HTTP does not encrypt traffic; configure HTTPS on a trusted network endpoint when encryption is required.
 
-Chrome may ask the web page for permission to connect to local network devices. Grant it for the IntraNest site to use the address you entered. The extension asks Chrome for access only to the server origin you configure.
+## Manage the server
 
-## API
+- Check it: `docker ps --filter name=intranest-server`
+- View logs: `docker logs -f intranest-server`
+- Stop it: `docker stop intranest-server`
+- Start it again: `docker start intranest-server`
 
-The server exposes a versioned JSON API under `/api/v1`. See [API v1](docs/api-v1.md) for the connection check, access key, links, chat, files, and settings endpoints.
+Installer data is kept in the Docker volume `intranest-data`, including the database and uploaded files. Removing the container does not remove this volume.
 
-## Data and configuration
+## Configuration
 
-By default, `./data` contains the database, shared files, and access key. Back up this folder while the server is stopped. You can change the main settings with environment variables:
+The installer accepts these optional environment variables:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `INTRANEST_LISTEN_ADDR` | `0.0.0.0:8080` | Interface and port to listen on |
-| `INTRANEST_DATA_DIR` | `./data` | Database, uploaded files, and access key folder |
-| `INTRANEST_ACCESS_TOKEN` | generated on first start | Override the shared access key |
-| `INTRANEST_CORS_ORIGINS` | no web origins | Comma-separated exact web origins allowed to call the API |
-| `INTRANEST_MAX_FILE_BYTES` | `104857600` | Per-file limit (100 MiB; accepted range 1 MiB–2 GiB) |
-| `INTRANEST_MAX_TOTAL_BYTES` | `10737418240` | Total shared file storage limit (10 GiB; minimum 1 MiB) |
-| `INTRANEST_TLS_CERT` / `INTRANEST_TLS_KEY` | unset | Certificate and key paths; set both to enable HTTPS |
+| `INTRANEST_VERSION` | `latest` | Container tag to install |
+| `INTRANEST_BIND_ADDRESS` | `0.0.0.0` | Host interface to publish |
+| `INTRANEST_DATA_VOLUME` | `intranest-data` | Docker volume for the database and files |
+| `INTRANEST_CERT_DIR` | — | Host directory containing the TLS files when HTTPS is enabled |
+| `INTRANEST_CERT_VOLUME` | `<container>-certs` | Docker volume containing the server's read-only TLS files |
+| `INTRANEST_TLS_CERT` | — | Certificate path inside the container, for example `/certs/fullchain.pem` |
+| `INTRANEST_TLS_KEY` | — | Private key path inside the container, for example `/certs/privkey.pem` |
+| `INTRANEST_MAX_FILE_BYTES` | `104857600` | Per-file upload limit |
+| `INTRANEST_MAX_TOTAL_BYTES` | `10737418240` | Total shared-file limit |
 
-The chat retention setting defaults to 30 days and can be changed from 1 to 3,650 days in Admin → Settings. File storage is limited to 10 GiB by default; set `INTRANEST_MAX_TOTAL_BYTES` to change it.
+The standalone release packages for Linux, macOS, and Windows are also available on [GitHub Releases](https://github.com/hyuck0221/intranest-server/releases). See the [API v2 guide](docs/api-v2.md) for developers.
 
 ## Release versions
 
-The root `version` file controls this project's version. A push to `master` publishes a GitHub Release and multi-architecture container only when that version is newer than the latest published release. The server has its own version, separate from the web and extension projects.
+The root `version` file controls this project's version. A push to `master` publishes a GitHub Release, installer script, native packages, and multi-architecture container only when that version is newer than the latest published release. The server, web, and extension versions are managed separately.

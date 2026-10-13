@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,7 +16,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,10 +27,10 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-var version = "0.1.0"
+var version = "0.2.0"
 
 const (
-	apiVersion       = "1"
+	apiVersion       = "2"
 	defaultRetention = 30
 	defaultMaxUpload = int64(100 << 20)
 	defaultMaxTotal  = int64(10 << 30)
@@ -241,8 +239,41 @@ func (s *Store) saveMessage(item ChatMessage) error {
 	return s.db.Update(func(tx *bolt.Tx) error { return tx.Bucket(bucketMessages).Put([]byte(key), value) })
 }
 
-func (s *Store) pruneMessages(before time.Time) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
+var errMessageNotFound = errors.New("message not found")
+
+// Edit or remove in a single transaction, preserving the original author and sort key.
+func (s *Store) mutateMessage(id string, content *string) (ChatMessage, error) {
+	var message ChatMessage
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(bucketMessages)
+		cursor := bucket.Cursor()
+		for key, value := cursor.First(); key != nil; key, value = cursor.Next() {
+			item, err := decode[ChatMessage](value)
+			if err != nil {
+				return err
+			}
+			if item.ID != id {
+				continue
+			}
+			message = item
+			if content == nil {
+				return cursor.Delete()
+			}
+			message.Content = *content
+			encoded, err := encode(message)
+			if err != nil {
+				return err
+			}
+			return bucket.Put(key, encoded)
+		}
+		return errMessageNotFound
+	})
+	return message, err
+}
+
+func (s *Store) pruneMessages(before time.Time) (int, error) {
+	removed := 0
+	err := s.db.Update(func(tx *bolt.Tx) error {
 		cursor := tx.Bucket(bucketMessages).Cursor()
 		for key, value := cursor.First(); key != nil; key, value = cursor.Next() {
 			message, err := decode[ChatMessage](value)
@@ -253,10 +284,12 @@ func (s *Store) pruneMessages(before time.Time) error {
 				if err := cursor.Delete(); err != nil {
 					return err
 				}
+				removed++
 			}
 		}
 		return nil
 	})
+	return removed, err
 }
 
 func (s *Store) listFiles() ([]SharedFile, error) {
@@ -329,7 +362,15 @@ func (h *chatHub) remove(client *wsClient) {
 }
 
 func (h *chatHub) publish(message ChatMessage) {
-	payload, err := json.Marshal(map[string]any{"type": "message", "message": message})
+	h.publishEvent(map[string]any{"type": "message", "message": message})
+}
+
+func (h *chatHub) changed(resource, action, id string) {
+	h.publishEvent(map[string]any{"type": "change", "resource": resource, "action": action, "id": id})
+}
+
+func (h *chatHub) publishEvent(event any) {
+	payload, err := json.Marshal(event)
 	if err != nil {
 		return
 	}
@@ -390,47 +431,36 @@ func (client *wsClient) readPump() {
 
 type API struct {
 	store          *Store
-	token          string
 	maxUploadBytes int64
 	maxTotalBytes  int64
 	uploadMu       sync.Mutex
-	allowedOrigins map[string]struct{}
-	ticketsMu      sync.Mutex
-	tickets        map[string]time.Time
+	messageMu      sync.Mutex
 	hub            *chatHub
 }
 
-func newAPI(store *Store, token string, maxUploadBytes, maxTotalBytes int64, origins []string, hub *chatHub) *API {
-	allow := make(map[string]struct{}, len(origins))
-	for _, origin := range origins {
-		if trimmed := strings.TrimSpace(origin); trimmed != "" {
-			allow[strings.TrimSuffix(trimmed, "/")] = struct{}{}
-		}
-	}
-	return &API{
-		store: store, token: token, maxUploadBytes: maxUploadBytes, maxTotalBytes: maxTotalBytes, allowedOrigins: allow,
-		tickets: make(map[string]time.Time), hub: hub,
-	}
+func newAPI(store *Store, maxUploadBytes, maxTotalBytes int64, hub *chatHub) *API {
+	return &API{store: store, maxUploadBytes: maxUploadBytes, maxTotalBytes: maxTotalBytes, hub: hub}
 }
 
 func (a *API) handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/health", a.health)
-	mux.Handle("GET /api/v1/session", a.protect(http.HandlerFunc(a.session)))
-	mux.Handle("GET /api/v1/links", a.protect(http.HandlerFunc(a.listLinks)))
-	mux.Handle("POST /api/v1/links", a.protect(http.HandlerFunc(a.createLink)))
-	mux.Handle("PUT /api/v1/links/{id}", a.protect(http.HandlerFunc(a.updateLink)))
-	mux.Handle("DELETE /api/v1/links/{id}", a.protect(http.HandlerFunc(a.removeLink)))
-	mux.Handle("GET /api/v1/messages", a.protect(http.HandlerFunc(a.listMessages)))
-	mux.Handle("POST /api/v1/messages", a.protect(http.HandlerFunc(a.createMessage)))
-	mux.Handle("POST /api/v1/chat/ticket", a.protect(http.HandlerFunc(a.createChatTicket)))
-	mux.HandleFunc("GET /api/v1/chat/ws", a.chatSocket)
-	mux.Handle("GET /api/v1/files", a.protect(http.HandlerFunc(a.listFiles)))
-	mux.Handle("POST /api/v1/files", a.protect(http.HandlerFunc(a.uploadFile)))
-	mux.Handle("GET /api/v1/files/{id}/download", a.protect(http.HandlerFunc(a.downloadFile)))
-	mux.Handle("DELETE /api/v1/files/{id}", a.protect(http.HandlerFunc(a.removeFile)))
-	mux.Handle("GET /api/v1/settings", a.protect(http.HandlerFunc(a.getSettings)))
-	mux.Handle("PUT /api/v1/settings", a.protect(http.HandlerFunc(a.updateSettings)))
+	mux.HandleFunc("GET /api/v2/health", a.health)
+	mux.HandleFunc("GET /api/v2/links", a.listLinks)
+	mux.HandleFunc("POST /api/v2/links", a.createLink)
+	mux.HandleFunc("PUT /api/v2/links/{id}", a.updateLink)
+	mux.HandleFunc("DELETE /api/v2/links/{id}", a.removeLink)
+	mux.HandleFunc("GET /api/v2/messages", a.listMessages)
+	mux.HandleFunc("POST /api/v2/messages", a.createMessage)
+	mux.HandleFunc("PUT /api/v2/messages/{id}", a.updateMessage)
+	mux.HandleFunc("DELETE /api/v2/messages/{id}", a.removeMessage)
+	mux.HandleFunc("GET /api/v2/chat/ws", a.chatSocket)
+	mux.HandleFunc("GET /api/v2/events/ws", a.chatSocket)
+	mux.HandleFunc("GET /api/v2/files", a.listFiles)
+	mux.HandleFunc("POST /api/v2/files", a.uploadFile)
+	mux.HandleFunc("GET /api/v2/files/{id}/download", a.downloadFile)
+	mux.HandleFunc("DELETE /api/v2/files/{id}", a.removeFile)
+	mux.HandleFunc("GET /api/v2/settings", a.getSettings)
+	mux.HandleFunc("PUT /api/v2/settings", a.updateSettings)
 	return a.securityHeaders(a.cors(mux))
 }
 
@@ -444,30 +474,12 @@ func (a *API) securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-var extensionOriginPattern = regexp.MustCompile(`^chrome-extension://[a-p]{32}$`)
-
-func (a *API) originAllowed(origin string) bool {
-	if origin == "" {
-		return true
-	}
-	if extensionOriginPattern.MatchString(origin) {
-		return true
-	}
-	_, ok := a.allowedOrigins[strings.TrimSuffix(origin, "/")]
-	return ok
-}
-
 func (a *API) cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		if origin != "" {
-			if !a.originAllowed(origin) {
-				writeError(w, http.StatusForbidden, "origin_not_allowed", "This site is not allowed to access this server.")
-				return
-			}
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Add("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Max-Age", "600")
 			if r.Method == http.MethodOptions && strings.EqualFold(r.Header.Get("Access-Control-Request-Private-Network"), "true") {
@@ -482,30 +494,10 @@ func (a *API) cors(next http.Handler) http.Handler {
 	})
 }
 
-func (a *API) protect(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		header := r.Header.Get("Authorization")
-		if !strings.HasPrefix(header, "Bearer ") {
-			writeError(w, http.StatusUnauthorized, "access_key_required", "Enter this server's access key to continue.")
-			return
-		}
-		provided := strings.TrimPrefix(header, "Bearer ")
-		if len(provided) != len(a.token) || subtle.ConstantTimeCompare([]byte(provided), []byte(a.token)) != 1 {
-			writeError(w, http.StatusUnauthorized, "invalid_access_key", "The access key is not valid.")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 func (a *API) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"service": "intranest-server", "status": "ok", "version": version, "apiVersion": apiVersion,
 	})
-}
-
-func (a *API) session(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "authorized"})
 }
 
 func (a *API) listLinks(w http.ResponseWriter, _ *http.Request) {
@@ -555,6 +547,7 @@ func (a *API) createLink(w http.ResponseWriter, r *http.Request) {
 		writeInternal(w, err)
 		return
 	}
+	a.hub.changed("links", "created", item.ID)
 	writeJSON(w, http.StatusCreated, item)
 }
 
@@ -579,6 +572,7 @@ func (a *API) updateLink(w http.ResponseWriter, r *http.Request) {
 		writeInternal(w, err)
 		return
 	}
+	a.hub.changed("links", "updated", item.ID)
 	writeJSON(w, http.StatusOK, item)
 }
 
@@ -587,6 +581,7 @@ func (a *API) removeLink(w http.ResponseWriter, r *http.Request) {
 		writeInternal(w, err)
 		return
 	}
+	a.hub.changed("links", "deleted", r.PathValue("id"))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -643,42 +638,51 @@ func (a *API) createMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, message)
 }
 
-func (a *API) createChatTicket(w http.ResponseWriter, _ *http.Request) {
-	ticket, err := randomID()
+func (a *API) updateMessage(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Content string `json:"content"`
+	}
+	if !readJSON(w, r, &input, 16<<10) {
+		return
+	}
+	content := strings.TrimSpace(input.Content)
+	if content == "" || len([]rune(content)) > 4000 {
+		writeError(w, http.StatusBadRequest, "invalid_message", "A message needs 1–4,000 characters of text.")
+		return
+	}
+	a.messageMu.Lock()
+	defer a.messageMu.Unlock()
+	message, err := a.store.mutateMessage(r.PathValue("id"), &content)
+	if errors.Is(err, errMessageNotFound) {
+		writeError(w, http.StatusNotFound, "message_not_found", "That message no longer exists.")
+		return
+	}
 	if err != nil {
 		writeInternal(w, err)
 		return
 	}
-	a.ticketsMu.Lock()
-	now := time.Now()
-	for key, expiry := range a.tickets {
-		if now.After(expiry) {
-			delete(a.tickets, key)
-		}
-	}
-	a.tickets[ticket] = now.Add(30 * time.Second)
-	a.ticketsMu.Unlock()
-	writeJSON(w, http.StatusCreated, map[string]any{"ticket": ticket, "expiresInSeconds": 30})
+	a.hub.publishEvent(map[string]any{"type": "change", "resource": "messages", "action": "updated", "id": message.ID, "message": message})
+	writeJSON(w, http.StatusOK, message)
 }
 
-func (a *API) consumeTicket(ticket string) bool {
-	a.ticketsMu.Lock()
-	defer a.ticketsMu.Unlock()
-	expires, ok := a.tickets[ticket]
-	delete(a.tickets, ticket)
-	return ok && time.Now().Before(expires)
+func (a *API) removeMessage(w http.ResponseWriter, r *http.Request) {
+	a.messageMu.Lock()
+	defer a.messageMu.Unlock()
+	message, err := a.store.mutateMessage(r.PathValue("id"), nil)
+	if errors.Is(err, errMessageNotFound) {
+		writeError(w, http.StatusNotFound, "message_not_found", "That message no longer exists.")
+		return
+	}
+	if err != nil {
+		writeInternal(w, err)
+		return
+	}
+	a.hub.changed("messages", "deleted", message.ID)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) chatSocket(w http.ResponseWriter, r *http.Request) {
-	if !a.originAllowed(r.Header.Get("Origin")) {
-		http.Error(w, "origin not allowed", http.StatusForbidden)
-		return
-	}
-	if !a.consumeTicket(r.URL.Query().Get("ticket")) {
-		http.Error(w, "valid one-time chat ticket required", http.StatusUnauthorized)
-		return
-	}
-	upgrader := websocket.Upgrader{CheckOrigin: func(req *http.Request) bool { return a.originAllowed(req.Header.Get("Origin")) }}
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -817,6 +821,7 @@ func (a *API) uploadFile(w http.ResponseWriter, r *http.Request) {
 		writeInternal(w, err)
 		return
 	}
+	a.hub.changed("files", "created", item.ID)
 	writeJSON(w, http.StatusCreated, item)
 }
 
@@ -866,6 +871,7 @@ func (a *API) removeFile(w http.ResponseWriter, r *http.Request) {
 		writeInternal(w, err)
 		return
 	}
+	a.hub.changed("files", "deleted", id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -892,6 +898,7 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.pruneChat()
+	a.hub.changed("settings", "updated", "")
 	writeJSON(w, http.StatusOK, settings)
 }
 
@@ -901,8 +908,11 @@ func (a *API) pruneChat() {
 		slog.Error("could not read chat retention setting", "error", err)
 		return
 	}
-	if err := a.store.pruneMessages(time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour)); err != nil {
+	removed, err := a.store.pruneMessages(time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour))
+	if err != nil {
 		slog.Error("could not prune expired chat messages", "error", err)
+	} else if removed > 0 {
+		a.hub.changed("messages", "pruned", "")
 	}
 }
 
@@ -936,50 +946,6 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 func writeInternal(w http.ResponseWriter, err error) {
 	slog.Error("request failed", "error", err)
 	writeError(w, http.StatusInternalServerError, "internal_error", "The server could not complete this request.")
-}
-
-func makeAccessToken(dataDir string) (string, error) {
-	if token := strings.TrimSpace(os.Getenv("INTRANEST_ACCESS_TOKEN")); token != "" {
-		if len(token) < 32 {
-			return "", errors.New("INTRANEST_ACCESS_TOKEN must contain at least 32 characters")
-		}
-		return token, nil
-	}
-	path := filepath.Join(dataDir, "access.token")
-	data, err := os.ReadFile(path)
-	if err == nil {
-		token := strings.TrimSpace(string(data))
-		if len(token) >= 32 {
-			if err := os.Chmod(path, 0o600); err != nil {
-				return "", err
-			}
-			return token, nil
-		}
-		return "", errors.New("access.token must contain at least 32 characters")
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	token := hex.EncodeToString(bytes)
-	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
-		return "", err
-	}
-	return token, nil
-}
-
-func parseOrigins(raw string) []string {
-	items := strings.Split(raw, ",")
-	origins := make([]string, 0, len(items))
-	for _, item := range items {
-		if origin := strings.TrimSpace(item); origin != "" {
-			origins = append(origins, origin)
-		}
-	}
-	return origins
 }
 
 func maxUploadFromEnv() int64 {
@@ -1018,16 +984,12 @@ func run() error {
 		return fmt.Errorf("open data store: %w", err)
 	}
 	defer store.close()
-	token, err := makeAccessToken(dataDir)
-	if err != nil {
-		return fmt.Errorf("load access key: %w", err)
-	}
 	hub := newChatHub()
-	api := newAPI(store, token, maxUploadFromEnv(), maxTotalFromEnv(), parseOrigins(os.Getenv("INTRANEST_CORS_ORIGINS")), hub)
+	api := newAPI(store, maxUploadFromEnv(), maxTotalFromEnv(), hub)
 	api.pruneChat()
 	addr := strings.TrimSpace(os.Getenv("INTRANEST_LISTEN_ADDR"))
 	if addr == "" {
-		addr = "0.0.0.0:8080"
+		addr = "0.0.0.0:43187"
 	}
 	server := &http.Server{
 		Addr: addr, Handler: api.handler(), ReadHeaderTimeout: 5 * time.Second,
@@ -1057,8 +1019,12 @@ func run() error {
 	if cert, key := os.Getenv("INTRANEST_TLS_CERT"), os.Getenv("INTRANEST_TLS_KEY"); (cert == "") != (key == "") {
 		return errors.New("set both INTRANEST_TLS_CERT and INTRANEST_TLS_KEY to enable HTTPS")
 	}
+	legacyTokenPath := filepath.Join(dataDir, "access.token")
+	if err := os.Remove(legacyTokenPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		slog.Warn("could not remove obsolete access key file", "path", legacyTokenPath, "error", err)
+	}
 	slog.Info("IntraNest server starting", "version", version, "listen", addr, "data", dataDir,
-		"accessKeyFile", filepath.Join(dataDir, "access.token"), "https", os.Getenv("INTRANEST_TLS_CERT") != "")
+		"https", os.Getenv("INTRANEST_TLS_CERT") != "")
 	if os.Getenv("INTRANEST_TLS_CERT") != "" {
 		err = server.ListenAndServeTLS(os.Getenv("INTRANEST_TLS_CERT"), os.Getenv("INTRANEST_TLS_KEY"))
 	} else {

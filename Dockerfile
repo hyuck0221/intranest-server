@@ -2,6 +2,7 @@ FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src
+RUN mkdir -p /data
 COPY go.mod go.sum version ./
 RUN go mod download
 COPY cmd ./cmd
@@ -10,9 +11,10 @@ RUN mkdir -p /out && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -t
 FROM gcr.io/distroless/static-debian13:nonroot
 WORKDIR /app
 COPY --from=build /out/intranest /app/intranest
-ENV INTRANEST_LISTEN_ADDR=0.0.0.0:8080
+COPY --chown=65532:65532 --from=build /data /data
+ENV INTRANEST_LISTEN_ADDR=0.0.0.0:43187
 ENV INTRANEST_DATA_DIR=/data
-EXPOSE 8080
+EXPOSE 43187
 VOLUME ["/data"]
 USER nonroot:nonroot
 ENTRYPOINT ["/app/intranest"]

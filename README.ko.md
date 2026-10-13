@@ -1,75 +1,76 @@
+<p align="center"><img src="docs/assets/intranest-mark.png" width="112" alt="IntraNest 로고"></p>
+
 # IntraNest 서버
 
-팀의 공유 링크, 파일, 대화를 인트라넷 안의 PC에 보관합니다. IntraNest 서버는 직접 소유한 컴퓨터에서 동작하며, 콘텐츠를 외부 호스팅 서비스로 전송하지 않습니다.
+팀의 링크, 파일, 대화를 직접 관리하는 PC에 보관합니다. 서버는 인트라넷 안에서 동작하며 공유 자료를 자체 데이터 볼륨에 저장합니다.
 
-**현재 버전:** `0.1.0`  
+**현재 버전:** `0.2.0`
+
 **언어:** [English](README.md)
 
-## 주요 기능
+## 서버 PC에 설치하기
 
-- 공유 링크, 채팅 기록, 업로드 파일을 서버 PC에 저장합니다.
-- 확장 프로그램과 IntraNest 웹 관리자 페이지가 하나의 인트라넷 주소로 연결됩니다.
-- 채팅은 기본 30일 보관 후 삭제됩니다. 관리자 페이지의 설정에서 기간을 바꿀 수 있습니다.
-- Docker Compose와 Windows/macOS/Linux용 단독 실행 파일을 제공합니다.
-- 기본 파일 하나당 100 MiB, 전체 파일 10 GiB 제한으로 호스트 저장 공간을 보호합니다.
+Docker Desktop(Windows/macOS) 또는 Docker Engine(Linux)을 설치하고 실행한 뒤 다음 명령을 실행하세요.
 
-## Docker Compose로 시작하기
+```sh
+curl -fsSL https://github.com/hyuck0221/intranest-server/releases/latest/download/install.sh | sh
+```
 
-1. 서버로 사용할 컴퓨터에 Docker Desktop(Windows/macOS) 또는 Docker Engine과 Compose v2(Linux)를 설치합니다.
-2. 이 저장소를 서버 컴퓨터에 내려받습니다.
-3. 설정 스크립트를 실행합니다.
+공식 컨테이너를 내려받아 실행하므로 저장소를 clone하거나 fork할 필요가 없습니다. Windows에서는 Docker Desktop을 실행하고 WSL 또는 Git Bash에서 명령을 실행하세요. 서버는 컴퓨터의 네트워크 인터페이스 전체에서 기본 포트 `43187`로 연결을 받습니다.
 
-   ```sh
-   ./scripts/setup.sh
-   ```
+관리자 페이지나 Chrome 확장 프로그램에는 `192.168.1.40`처럼 서버 PC의 IP 주소나 호스트 이름만 입력하세요. 포트 `43187`은 자동으로 사용합니다. 호스트 컴퓨터 방화벽에서 사용할 네트워크에 한해 TCP `43187` 포트를 허용합니다.
 
-   Windows에서는 WSL에서 실행하거나 Docker Desktop으로 compose 파일을 시작합니다.
-4. 공개 IntraNest 웹사이트가 다른 origin에서 제공된다면 `.env`의 `INTRANEST_CORS_ORIGINS`에 정확한 origin을 추가하고 서버를 다시 시작합니다.
-5. 서버 컴퓨터 방화벽에서 인트라넷에 한해 TCP `8080` 포트를 허용합니다.
-6. 처음 시작하면 `data/access.token`에 접근 키가 생성됩니다. 신뢰할 수 있는 방법으로 팀에 전달합니다.
-7. 웹 관리자 또는 확장 프로그램에서 `http://<서버-컴퓨터-주소>:8080`과 접근 키를 입력합니다.
+클라이언트는 HTTPS로 먼저 연결하고 실패하면 HTTP로 다시 시도합니다. 암호화 연결이 필요하면 서버에 신뢰할 수 있는 인증서를 설정하세요.
 
-연결 확인 API는 브라우저가 서버를 확인할 수 있도록 공개되어 있습니다. 링크, 파일, 채팅, 설정은 접근 키가 있어야 이용할 수 있습니다.
+HTTPS로 호스팅된 관리자 페이지에서 채팅을 사용하려면 IntraNest 서버도 HTTPS를 설정해야 합니다. 인증서와 키를 호스트 PC의 한 폴더에 넣고, 폴더와 컨테이너 안의 파일 이름을 지정해 설치하세요.
 
-## Docker 없이 설치하기
+```sh
+curl -fsSL https://github.com/hyuck0221/intranest-server/releases/latest/download/install.sh | INTRANEST_CERT_DIR="$PWD/certs" INTRANEST_TLS_CERT=/certs/fullchain.pem INTRANEST_TLS_KEY=/certs/privkey.pem sh
+```
 
-서버 컴퓨터에 맞는 패키지를 [GitHub Releases](https://github.com/hyuck0221/intranest-server/releases)에서 내려받아 압축을 풀고 실행합니다. 처음 실행하면 `data` 폴더와 임의 접근 키가 생성됩니다.
+클라이언트 기기에서 신뢰하는 인증서를 사용하고 서버 주소와 인증서 이름이 일치해야 합니다. 설치 스크립트는 파일을 Docker 볼륨에 복사하고 서버에는 읽기 전용으로 연결합니다.
 
-- macOS/Linux: `./intranest`
-- Windows: `intranest.exe`
+## 팀에서 공유할 수 있는 자료
 
-기본 주소는 `0.0.0.0:8080`입니다. `data/access.token`에서 접근 키를 확인하고 컴퓨터 방화벽에서 인트라넷 포트를 허용합니다.
+- 팀에서 자주 쓰는 사이트 링크
+- 서버 PC에 저장되는 파일
+- 실시간 채팅과 기본 30일 보관 기록
 
-## 연결을 안전하게 유지하기
+채팅 보관 기간은 관리자 페이지 → 설정에서 바꿀 수 있습니다. 파일은 기본 파일당 100 MiB, 전체 10 GiB까지 업로드할 수 있습니다.
 
-접근 키는 개인별 계정이 아니라 팀 공용 키입니다. 키를 가진 사용자는 공유 콘텐츠를 읽고 추가하고 삭제할 수 있으므로 안전한 방법으로 전달해야 합니다. 키를 바꾸려면 서버를 중지하고 `data/access.token`을 32자 이상의 새 임의 문자열로 교체한 뒤 다시 실행합니다.
+## 네트워크 접근
 
-채팅에 표시되는 이름은 작성자가 직접 입력하며 인증된 계정 정보가 아닙니다.
+IntraNest에는 로그인이나 접근 키가 없습니다. 서버에 연결할 수 있는 사람은 링크, 파일, 채팅을 읽고 추가하고 삭제할 수 있습니다. 서버는 모든 웹 origin의 브라우저 요청을 허용하고 기본적으로 모든 네트워크 인터페이스에서 연결을 받습니다. 신뢰할 수 있는 네트워크에서 실행하고 컴퓨터 방화벽으로 포트를 제한하며 공용 인터넷에 노출하지 마세요.
 
-신뢰할 수 있는 인증서와 키를 `INTRANEST_TLS_CERT`, `INTRANEST_TLS_KEY`에 지정하면 HTTPS를 사용할 수 있습니다. HTTPS가 없으면 로컬 네트워크에서도 API와 접근 키가 암호화되지 않습니다. 신뢰 범위가 불분명한 네트워크에서는 사설 인증서 기관에서 발급한 신뢰 가능한 인증서를 사용하세요. `INTRANEST_CORS_ORIGINS`에는 웹 사이트의 정확한 origin을 지정하고 `*`는 사용하지 마세요.
+채팅 표시 이름은 작성자가 직접 입력하며 인증된 계정이 아닙니다. 기본 HTTP 연결은 데이터를 암호화하지 않습니다. 암호화가 필요하면 신뢰할 수 있는 네트워크 endpoint에서 HTTPS를 설정하세요.
 
-Chrome은 웹 사이트가 로컬 네트워크 장치에 연결할 때 권한을 요청할 수 있습니다. 입력한 주소를 사용하려면 IntraNest 웹 사이트의 요청을 허용하세요. 확장 프로그램은 설정한 서버 origin에만 접근 권한을 요청합니다.
+## 서버 관리
 
-## API
+- 상태 확인: `docker ps --filter name=intranest-server`
+- 로그 보기: `docker logs -f intranest-server`
+- 중지: `docker stop intranest-server`
+- 다시 시작: `docker start intranest-server`
 
-JSON API는 `/api/v1`에서 제공합니다. 연결 확인, 접근 키, 링크, 채팅, 파일, 설정 API는 [API v1 문서](docs/api-v1.md)를 참고하세요.
+설치 스크립트는 데이터베이스와 업로드 파일을 Docker 볼륨 `intranest-data`에 보관합니다. 컨테이너를 지워도 이 볼륨은 유지됩니다.
 
-## 데이터와 설정
+## 설치 설정
 
-기본 `./data` 폴더에 데이터베이스, 공유 파일, 접근 키를 저장합니다. 백업은 서버를 중지한 뒤 폴더 전체를 복사하세요. 주요 설정은 환경 변수로 변경할 수 있습니다.
+설치 명령을 실행하기 전에 다음 환경 변수를 선택적으로 지정할 수 있습니다.
 
-| 환경 변수 | 기본값 | 설명 |
+| 변수 | 기본값 | 설명 |
 | --- | --- | --- |
-| `INTRANEST_LISTEN_ADDR` | `0.0.0.0:8080` | 수신 인터페이스와 포트 |
-| `INTRANEST_DATA_DIR` | `./data` | 데이터베이스, 파일, 키 폴더 |
-| `INTRANEST_ACCESS_TOKEN` | 첫 실행 시 생성 | 팀 공용 접근 키 직접 지정 |
-| `INTRANEST_CORS_ORIGINS` | 웹 origin 없음 | API 호출을 허용할 정확한 웹 origin 목록 |
-| `INTRANEST_MAX_FILE_BYTES` | `104857600` | 파일 하나의 최대 크기(100 MiB, 1 MiB~2 GiB) |
-| `INTRANEST_MAX_TOTAL_BYTES` | `10737418240` | 전체 공유 파일의 최대 크기(10 GiB, 최소 1 MiB) |
-| `INTRANEST_TLS_CERT` / `INTRANEST_TLS_KEY` | 미설정 | HTTPS 인증서와 키 경로. 둘 다 설정해야 HTTPS가 켜집니다. |
+| `INTRANEST_VERSION` | `latest` | 설치할 컨테이너 버전 |
+| `INTRANEST_BIND_ADDRESS` | `0.0.0.0` | 연결을 받을 호스트 인터페이스 |
+| `INTRANEST_DATA_VOLUME` | `intranest-data` | 데이터베이스와 파일을 보관할 Docker 볼륨 |
+| `INTRANEST_CERT_DIR` | — | HTTPS 사용 시 인증서 파일이 들어 있는 호스트 폴더 |
+| `INTRANEST_CERT_VOLUME` | `<container>-certs` | 서버의 읽기 전용 인증서 파일이 들어 있는 Docker 볼륨 |
+| `INTRANEST_TLS_CERT` | — | 컨테이너 내부 인증서 경로(예: `/certs/fullchain.pem`) |
+| `INTRANEST_TLS_KEY` | — | 컨테이너 내부 개인 키 경로(예: `/certs/privkey.pem`) |
+| `INTRANEST_MAX_FILE_BYTES` | `104857600` | 파일 하나의 최대 업로드 크기 |
+| `INTRANEST_MAX_TOTAL_BYTES` | `10737418240` | 전체 파일 저장 한도 |
 
-채팅 보관 기간은 기본 30일이며 관리자 페이지에서 1~3,650일로 변경할 수 있습니다. 전체 파일 저장 공간은 기본 10 GiB이며 `INTRANEST_MAX_TOTAL_BYTES`로 바꿀 수 있습니다.
+Linux, macOS, Windows용 단독 실행 파일도 [GitHub Releases](https://github.com/hyuck0221/intranest-server/releases)에서 받을 수 있습니다. 개발자용 API는 [API v2 가이드](docs/api-v2.md)를 참고하세요.
 
 ## 버전 배포
 
-루트의 `version` 파일이 이 저장소의 버전을 관리합니다. `master`에 push할 때 현재 버전이 최신 GitHub Release보다 높으면 GitHub Release와 멀티 아키텍처 컨테이너를 배포합니다. 서버, 웹, 확장 프로그램 버전은 각각 따로 관리합니다.
+루트의 `version` 파일이 이 프로젝트 버전을 관리합니다. `master`에 push할 때 현재 버전이 최신 릴리스보다 높으면 GitHub Release, 설치 스크립트, 운영체제별 패키지, 멀티 아키텍처 컨테이너를 배포합니다. 서버, 웹, 확장 프로그램 버전은 각각 따로 관리합니다.

@@ -16,7 +16,6 @@ if [ ! -f .env ]; then
   cat > .env <<ENV
 INTRANEST_UID=$(id -u)
 INTRANEST_GID=$(id -g)
-INTRANEST_CORS_ORIGINS=http://localhost:4173,http://127.0.0.1:4173
 ENV
   chmod 600 .env
 fi
@@ -24,6 +23,7 @@ fi
 docker compose pull
 docker compose up -d
 
-echo "IntraNest server is starting on port ${INTRANEST_PORT:-8080}."
-echo "After the first start, find the access key in ./data/access.token and share it securely with your team."
+echo "IntraNest server is starting on port 43187."
+echo "Enter the server computer's IP address in Admin or the extension."
+echo "Anyone who can reach this address can manage all shared content. Keep the port on a trusted network."
 echo "Check status with: docker compose ps"
